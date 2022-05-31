@@ -13,8 +13,8 @@ import (
 	"github.com/taurusgroup/multi-party-sig/pkg/pool"
 	"github.com/taurusgroup/multi-party-sig/pkg/protocol"
 	"github.com/taurusgroup/multi-party-sig/protocols/cmp"
-	"log"
 	"sync"
+	"syscall/js"
 )
 
 func CMPSign(c *cmp.Config, m []byte, signers party.IDSlice, n *test.Network, pl *pool.Pool) error {
@@ -138,179 +138,197 @@ func RoundToProtocol(r round.Session, roundMsg *round.Message) *protocol.Message
 	return msg
 }
 
+func addOne() js.Func {
+	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		return args[0].Int() + 1
+	})
+}
+
+func run() js.Func {
+	return js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		fmt.Println("------------------------------------start------------------------------------")
+		ids := party.IDSlice{"client-1", "server-1"}
+		threshold := 1
+		sessionIDUUID := uuid.New()
+		sessionIDBytes, err := sessionIDUUID.MarshalBinary()
+		if err != nil {
+			panic(err)
+		}
+		clientOut := make(chan *round.Message, 5)
+		serverOut := make(chan *round.Message, 5)
+
+		pl := pool.NewPool(0)
+		defer pl.TearDown()
+		ClientKeygenFn := cmp.Keygen(curve.Secp256k1{}, ids[0], ids, threshold, pl)
+		clientRound1, err := ClientKeygenFn(sessionIDBytes)
+		if err != nil {
+			panic(err)
+		}
+		ServerKeygenFn := cmp.Keygen(curve.Secp256k1{}, ids[1], ids, threshold, pl)
+		serverRound1, err := ServerKeygenFn(sessionIDBytes)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("client round 1")
+		clientRound2, err := clientRound1.Finalize(clientOut)
+		close(clientOut)
+		if err != nil {
+			panic(err)
+		}
+		// APICall 1: Client calls server. Server starts round 1 and processes client message.
+		fmt.Println("server round 1")
+		serverRound2, err := serverRound1.Finalize(serverOut)
+		close(serverOut)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("server round 2 accept")
+		for roundMsg := range clientOut {
+			msg := RoundToProtocol(clientRound2, roundMsg)
+			Accept(serverRound2, msg)
+		}
+		// Server returns
+
+		// Client continues
+		fmt.Println("client round 2 accept")
+		for roundMsg := range serverOut {
+			msg := RoundToProtocol(serverRound2, roundMsg)
+			Accept(clientRound2, msg)
+		}
+		fmt.Println("client round 2")
+		clientOut = make(chan *round.Message, 5)
+		serverOut = make(chan *round.Message, 5)
+		clientRound3, err := clientRound2.Finalize(clientOut)
+		close(clientOut)
+		if err != nil {
+			panic(err)
+		}
+
+		// APICall 2: Client calls server
+		fmt.Println("server round 2")
+		serverRound3, err := serverRound2.Finalize(serverOut)
+		close(serverOut)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("server round 3 accept")
+		for roundMsg := range clientOut {
+			msg := RoundToProtocol(clientRound3, roundMsg)
+			Accept(serverRound3, msg)
+		}
+		// Server returns
+
+		// Client continues
+		fmt.Println("client round 3 accept")
+		for roundMsg := range serverOut {
+			msg := RoundToProtocol(serverRound3, roundMsg)
+			Accept(clientRound3, msg)
+		}
+		fmt.Println("client round 3")
+		clientOut = make(chan *round.Message, 5)
+		serverOut = make(chan *round.Message, 5)
+		clientRound4, err := clientRound3.Finalize(clientOut)
+		close(clientOut)
+		if err != nil {
+			panic(err)
+		}
+
+		// API Call 3
+		fmt.Println("server round 4")
+		serverRound4, err := serverRound3.Finalize(serverOut)
+		close(serverOut)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println("server round 4 accept")
+		for roundMsg := range clientOut {
+			msg := RoundToProtocol(clientRound4, roundMsg)
+			Accept(serverRound4, msg)
+		}
+		// Server Returns
+
+		// Client continues
+		fmt.Println("client round 4 accept")
+		for roundMsg := range serverOut {
+			msg := RoundToProtocol(serverRound4, roundMsg)
+			Accept(clientRound4, msg)
+		}
+		fmt.Println("client round 4")
+		clientOut = make(chan *round.Message, 2)
+		serverOut = make(chan *round.Message, 2)
+		clientRound5, err := clientRound4.Finalize(clientOut)
+		close(clientOut)
+		if err != nil {
+			panic(err)
+		}
+
+		// API Call 5
+		serverRound5, err := serverRound4.Finalize(serverOut)
+		close(serverOut)
+		if err != nil {
+			panic(err)
+		}
+		for roundMsg := range clientOut {
+			msg := RoundToProtocol(clientRound5, roundMsg)
+			Accept(serverRound5, msg)
+		}
+		// Server Returns
+
+		// Client continues
+		for roundMsg := range serverOut {
+			msg := RoundToProtocol(serverRound5, roundMsg)
+			Accept(clientRound5, msg)
+		}
+		fmt.Println("client round 5")
+		clientOut = make(chan *round.Message, 2)
+		serverOut = make(chan *round.Message, 2)
+		clientResultAsSession, err := clientRound5.Finalize(clientOut)
+		close(clientOut)
+		if err != nil {
+			panic(err)
+		}
+		clientOutput := clientResultAsSession.(*round.Output)
+		clientResult := clientOutput.Result
+		clientConfig := clientResult.(*cmp.Config)
+		fmt.Println(clientConfig)
+
+		serverResultAsSession, err := serverRound5.Finalize(serverOut)
+		close(serverOut)
+		if err != nil {
+			panic(err)
+		}
+		serverOutput := serverResultAsSession.(*round.Output)
+		serverResult := serverOutput.Result
+		serverConfig := serverResult.(*cmp.Config)
+		fmt.Println(serverConfig)
+
+		fmt.Println("------------------------------------end------------------------------------")
+
+		fmt.Println("start signature")
+		message := []byte("hello")
+		net := test.NewNetwork(ids)
+		configs := []*cmp.Config{clientConfig, serverConfig}
+		var wg sync.WaitGroup
+		for _, config := range configs {
+			wg.Add(1)
+			go func(config *cmp.Config) {
+				goPl := pool.NewPool(1)
+				defer goPl.TearDown()
+				if err = CMPSign(config, message, ids, net, goPl); err != nil {
+					fmt.Println(err)
+				}
+			}(config)
+		}
+		wg.Wait()
+		return nil
+	})
+}
+
 func main() {
-	log.Println("------------------------------------start------------------------------------")
-	ids := party.IDSlice{"client-1", "server-1"}
-	threshold := 1
-	sessionIDUUID := uuid.New()
-	sessionIDBytes, err := sessionIDUUID.MarshalBinary()
-	if err != nil {
-		panic(err)
-	}
-	clientOut := make(chan *round.Message, 5)
-	serverOut := make(chan *round.Message, 5)
-
-	pl := pool.NewPool(0)
-	defer pl.TearDown()
-	ClientKeygenFn := cmp.Keygen(curve.Secp256k1{}, ids[0], ids, threshold, pl)
-	clientRound1, err := ClientKeygenFn(sessionIDBytes)
-	if err != nil {
-		panic(err)
-	}
-	ServerKeygenFn := cmp.Keygen(curve.Secp256k1{}, ids[1], ids, threshold, pl)
-	serverRound1, err := ServerKeygenFn(sessionIDBytes)
-	if err != nil {
-		panic(err)
-	}
-	log.Println("client round 1")
-	clientRound2, err := clientRound1.Finalize(clientOut)
-	close(clientOut)
-	if err != nil {
-		panic(err)
-	}
-	// APICall 1: Client calls server. Server starts round 1 and processes client message.
-	log.Println("server round 1")
-	serverRound2, err := serverRound1.Finalize(serverOut)
-	close(serverOut)
-	if err != nil {
-		panic(err)
-	}
-	log.Println("server round 2 accept")
-	for roundMsg := range clientOut {
-		msg := RoundToProtocol(clientRound2, roundMsg)
-		Accept(serverRound2, msg)
-	}
-	// Server returns
-
-	// Client continues
-	log.Println("client round 2 accept")
-	for roundMsg := range serverOut {
-		msg := RoundToProtocol(serverRound2, roundMsg)
-		Accept(clientRound2, msg)
-	}
-	log.Println("client round 2")
-	clientOut = make(chan *round.Message, 5)
-	serverOut = make(chan *round.Message, 5)
-	clientRound3, err := clientRound2.Finalize(clientOut)
-	close(clientOut)
-	if err != nil {
-		panic(err)
-	}
-
-	// APICall 2: Client calls server
-	log.Println("server round 2")
-	serverRound3, err := serverRound2.Finalize(serverOut)
-	close(serverOut)
-	if err != nil {
-		panic(err)
-	}
-	log.Println("server round 3 accept")
-	for roundMsg := range clientOut {
-		msg := RoundToProtocol(clientRound3, roundMsg)
-		Accept(serverRound3, msg)
-	}
-	// Server returns
-
-	// Client continues
-	log.Println("client round 3 accept")
-	for roundMsg := range serverOut {
-		msg := RoundToProtocol(serverRound3, roundMsg)
-		Accept(clientRound3, msg)
-	}
-	log.Println("client round 3")
-	clientOut = make(chan *round.Message, 5)
-	serverOut = make(chan *round.Message, 5)
-	clientRound4, err := clientRound3.Finalize(clientOut)
-	close(clientOut)
-	if err != nil {
-		panic(err)
-	}
-
-	// API Call 3
-	log.Println("server round 4")
-	serverRound4, err := serverRound3.Finalize(serverOut)
-	close(serverOut)
-	if err != nil {
-		panic(err)
-	}
-	log.Println("server round 4 accept")
-	for roundMsg := range clientOut {
-		msg := RoundToProtocol(clientRound4, roundMsg)
-		Accept(serverRound4, msg)
-	}
-	// Server Returns
-
-	// Client continues
-	log.Println("client round 4 accept")
-	for roundMsg := range serverOut {
-		msg := RoundToProtocol(serverRound4, roundMsg)
-		Accept(clientRound4, msg)
-	}
-	log.Println("client round 4")
-	clientOut = make(chan *round.Message, 2)
-	serverOut = make(chan *round.Message, 2)
-	clientRound5, err := clientRound4.Finalize(clientOut)
-	close(clientOut)
-	if err != nil {
-		panic(err)
-	}
-
-	// API Call 5
-	serverRound5, err := serverRound4.Finalize(serverOut)
-	close(serverOut)
-	if err != nil {
-		panic(err)
-	}
-	for roundMsg := range clientOut {
-		msg := RoundToProtocol(clientRound5, roundMsg)
-		Accept(serverRound5, msg)
-	}
-	// Server Returns
-
-	// Client continues
-	for roundMsg := range serverOut {
-		msg := RoundToProtocol(serverRound5, roundMsg)
-		Accept(clientRound5, msg)
-	}
-	log.Println("client round 5")
-	clientOut = make(chan *round.Message, 2)
-	serverOut = make(chan *round.Message, 2)
-	clientResultAsSession, err := clientRound5.Finalize(clientOut)
-	close(clientOut)
-	if err != nil {
-		panic(err)
-	}
-	clientOutput := clientResultAsSession.(*round.Output)
-	clientResult := clientOutput.Result
-	clientConfig := clientResult.(*cmp.Config)
-	log.Println(clientConfig)
-
-	serverResultAsSession, err := serverRound5.Finalize(serverOut)
-	close(serverOut)
-	if err != nil {
-		panic(err)
-	}
-	serverOutput := serverResultAsSession.(*round.Output)
-	serverResult := serverOutput.Result
-	serverConfig := serverResult.(*cmp.Config)
-	log.Println(serverConfig)
-
-	log.Println("------------------------------------end------------------------------------")
-
-	log.Println("start signature")
-	message := []byte("hello")
-	net := test.NewNetwork(ids)
-	configs := []*cmp.Config{clientConfig, serverConfig}
-	var wg sync.WaitGroup
-	for _, config := range configs {
-		wg.Add(1)
-		go func(config *cmp.Config) {
-			goPl := pool.NewPool(1)
-			defer goPl.TearDown()
-			if err = CMPSign(config, message, ids, net, goPl); err != nil {
-				fmt.Println(err)
-			}
-		}(config)
-	}
-	wg.Wait()
+	ch := make(chan struct{}, 0)
+	fmt.Println("Hello, World!")
+	js.Global().Set("AddOne", addOne())
+	js.Global().Set("Run", run())
+	<-ch
+	fmt.Println("Exiting Go!")
 }
